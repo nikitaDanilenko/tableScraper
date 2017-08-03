@@ -1,69 +1,60 @@
 module TableScraper where
 
-import Text.HTML.Parser
-import Data.Text         ( Text, pack, concatMap, unlines, intercalate )
-import Data.Maybe        ( mapMaybe )
+import Data.Text                ( Text, pack )
+import Data.Text.IO             ( writeFile )
+import qualified Data.Text as T ( unlines, intercalate )
+import Text.XML.HXT.Core
+import Text.Printf              ( printf )
+import Data.Function            ( on )
+import Data.List                ( groupBy )
 
-import Prelude hiding    ( concatMap, unlines )
+import Prelude hiding           ( writeFile )
 
-isStartBy :: Text -> Token -> Bool
-isStartBy tagName (TagOpen name _) = tagName == name
-isStartBy _       _              = False
-
-isEndBy :: Text -> Token -> Bool
-isEndBy tagName (TagClose name) = tagName == name
-isEndBy _       _               = False
-
-openCloseBy :: Text -> (Token -> Bool, Token -> Bool)
-openCloseBy tagName = (isStartBy tagName, isEndBy tagName)
-
-tableName, headerName, rowName, cellName :: Text
-tableName  = pack "table"
-headerName = pack "th"
-rowName    = pack "tr"
-cellName   = pack "td"
-
-isTableStart, isTableEnd :: Token -> Bool
-(isTableStart, isTableEnd) = openCloseBy tableName
-
-isHeaderStart, isHeaderEnd :: Token -> Bool
-(isHeaderStart, isHeaderEnd) = openCloseBy headerName
-
-isRowStart, isRowEnd :: Token -> Bool
-(isRowStart, isRowEnd) = openCloseBy rowName
-
-isCellStart, isCellEnd :: Token -> Bool
-(isCellStart, isCellEnd) = openCloseBy cellName
-
-toText :: Token -> Maybe Text
-toText (ContentText text) = Just text
-toText _                  = Nothing
-
-data Table = Table { headerLine :: Maybe [Text], cells :: [[Text]] }
+data Table = Table { headerLine :: [Text], cells :: [[Text]] }
 
 toCSV :: Table -> Text
 toCSV = toCSVWithSeparator (pack ",")
 
 toCSVWithSeparator :: Text -> Table -> Text
 toCSVWithSeparator sep table =
-  unlines (map (intercalate sep) (cells table))
+  T.unlines (map (T.intercalate sep) (cells table))
 
-parseTables :: [Token] -> [Table]
-parseTables [] = [] 
-parseTables ts = table : parseTables remainder where
-  (table, remainder) = parseTable ts
+tables :: ArrowXml a => a XmlTree XmlTree
+tables = deep (hasName "table")
 
-takeChunksWith :: (a -> Bool) -> (a -> Bool) -> [a] -> ([a], [a])
-takeChunksWith start end xs = 
-  span (not . end) (drop 1 (dropWhile (not . start) xs))
+headers :: ArrowXml a => a XmlTree String
+headers = getChildren /> hasName "th" /> getText
 
---TODO Hier geht es weiter.
-parseTable :: [Token] -> (Table, [Token])
-parseTable ts = undefined
-  --span (not . isTableEnd) (drop 1 (dropWhile (not . isTableStart) ts))
+rows :: ArrowXml a => a XmlTree XmlTree
+rows = getChildren >>> hasName "tr"
 
-parseLine :: [Token] -> ([Text], [Token])
-parseLine ts = (mapMaybe toText preParsed, drop 1 preRemainder) where
-   (preParsed, preRemainder) = takeChunksWith isCellStart isCellEnd ts
+columns :: ArrowXml a => a XmlTree String
+columns = getChildren >>> hasName "td" /> getText
 
---parseLines :: [Token] -> ([[Text]], )
+collectTable :: ArrowXml a => a XmlTree ([String], [String])
+collectTable = tables >>> listA headers &&& (rows >>> listA columns)
+
+deepPack :: [String] -> [Text]
+deepPack = map pack
+
+groupTables :: [([String], [String])] ->[Table]
+groupTables = 
+  map (\((headers, _) : rest) -> Table (deepPack headers) (map (deepPack . snd) rest)) . groupBy ((==) `on` fst)
+
+fetchTables :: String -> IO [Table]
+fetchTables fileName = 
+  fmap groupTables (runX (readDocument [withErrors yes, withWarnings no] fileName >>> collectTable))
+
+writeTables :: String -> [Table] -> IO ()
+writeTables prefix tables = do
+  let pieces       = map toCSV tables
+      fillTo       = length (show (length tables))
+      mkFileName :: Int -> String
+      mkFileName i = concat [prefix, "-", printf ("%0" ++ show fillTo ++ "d") i]
+  mapM_ (\(i, text) -> writeFile (mkFileName i)  text) (zip [1 .. ] pieces)    
+
+
+
+-- main :: IO ()
+-- main = do
+--   args <- getArgs
