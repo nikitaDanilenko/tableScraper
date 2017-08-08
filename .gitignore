@@ -18,3 +18,9 @@ cabal.sandbox.config
 .stack-work/
 cabal.project.local
 .HTF/
+
+# To be processed, processed, compiled
+
+*.html
+*.csv
+*.exe
